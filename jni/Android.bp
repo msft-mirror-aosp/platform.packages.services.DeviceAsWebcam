@@ -7,27 +7,27 @@ cc_library_shared {
     stl: "c++_static",
     shared_libs: [
         "libandroid",
-        "libjpeg",
         "liblog",
-        "libmediandk",
         "libnativehelper",
+        "libmediandk",
         "libyuv",
+        "libjpeg",
     ],
     static_libs: [
         "libbase_ndk",
     ],
     srcs: [
         "Buffer.cpp",
-        "DeviceAsWebcamNative.cpp",
-        "DeviceAsWebcamServiceManager.cpp",
         "Encoder.cpp",
-        "SdkFrameProvider.cpp",
+        "deviceAsWebcamNative.cpp",
+        "DeviceAsWebcamServiceManager.cpp",
         "UVCProvider.cpp",
+        "SdkFrameProvider.cpp",
     ],
     cflags: [
         "-O3",
-        "-Wextra",
         "-funroll-loops",
+        "-Wextra",
     ],
     // for including the jni.h file
     header_libs: ["jni_headers"],

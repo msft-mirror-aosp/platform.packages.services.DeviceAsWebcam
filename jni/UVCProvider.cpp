@@ -20,31 +20,29 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <utility>
 #include <vector>
 
 #include <glob.h>
 #include <linux/usb/g_uvc.h>
 #include <linux/usb/video.h>
+#include <stdio.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
 
-#include <DeviceAsWebcamNative.h>
-#include <SdkFrameProvider.h>
-#include <UVCProvider.h>
-#include <Utils.h>
 #include <log/log.h>
+#include "SdkFrameProvider.h"
+#include "UVCProvider.h"
+#include "Utils.h"
 
 constexpr int MAX_EVENTS = 10;
 constexpr uint32_t NUM_BUFFERS_ALLOC = 4;
 constexpr uint32_t USB_PAYLOAD_TRANSFER_SIZE = 3072;
+constexpr uint32_t kMaxDevicePathLen = 256;
+constexpr char kDevicePath[] = "/dev/";
 constexpr char kDeviceGlobPattern[] = "/dev/video*";
-
-// Taken from UVC UAPI. The kernel handles mapping these back to actual USB interfaces set up by the
-// UVC gadget function.
+constexpr char kPrefix[] = "video";
 constexpr uint32_t CONTROL_INTERFACE_IDX = 0;
 constexpr uint32_t STREAMING_INTERFACE_IDX = 1;
-
 constexpr uint32_t FRAME_INTERVAL_NUM = 10'000'000;
 
 namespace android {
@@ -61,7 +59,7 @@ Status EpollW::init() {
 }
 
 Status EpollW::add(int fd, uint32_t eventsIn) {
-    struct epoll_event event {};
+    struct epoll_event event;
     event.data.fd = fd;
     event.events = eventsIn;
     if (epoll_ctl(mEpollFd.get(), EPOLL_CTL_ADD, fd, &event) != 0) {
@@ -72,7 +70,7 @@ Status EpollW::add(int fd, uint32_t eventsIn) {
 }
 
 Status EpollW::modify(int fd, uint32_t newEvents) {
-    struct epoll_event event {};
+    struct epoll_event event;
     event.data.fd = fd;
     event.events = newEvents;
     // TODO(b/267794640): Could we use CTL_MOD instead with UVC, reliably.
@@ -88,7 +86,7 @@ Status EpollW::modify(int fd, uint32_t newEvents) {
 }
 
 Status EpollW::remove(int fd) {
-    struct epoll_event event {};
+    struct epoll_event event;
     if (epoll_ctl(mEpollFd.get(), EPOLL_CTL_DEL, fd, &event) != 0) {
         ALOGE("%s Epoll_ctl DEL failed %s \n", __FUNCTION__, strerror(errno));
         return Status::ERROR;
@@ -96,7 +94,7 @@ Status EpollW::remove(int fd) {
     return Status::OK;
 }
 
-Events EpollW::waitForEvents() {
+Events EpollW::wait() {
     struct epoll_event events[MAX_EVENTS];
     Events eventsVec;
     int nFds = epoll_wait(mEpollFd.get(), events, MAX_EVENTS, /*msWait for 15 fps*/ 66);
@@ -112,7 +110,7 @@ Events EpollW::waitForEvents() {
 }
 
 Status UVCProvider::UVCDevice::openV4L2DeviceAndSubscribe(const std::string& videoNode) {
-    struct v4l2_capability cap {};
+    struct v4l2_capability cap;
     int fd = open(videoNode.c_str(), O_RDWR);
     if (fd < 0) {
         ALOGE("%s Couldn't open V4L2 device %s err: %d fd %d, err str %s", __FUNCTION__,
@@ -129,17 +127,18 @@ Status UVCProvider::UVCDevice::openV4L2DeviceAndSubscribe(const std::string& vid
         return Status::ERROR;
     }
 
-    // Check that it is indeed a video output device
+    // Check that its indeed a video output device
     if (!(cap.capabilities & V4L2_CAP_VIDEO_OUTPUT)) {
         ALOGE("%s V4L2 device capabilities don't contain video output, caps:  %zu", __FUNCTION__,
               (size_t)cap.capabilities);
         return Status::ERROR;
     }
 
-    mUVCProperties = parseUvcProperties();
+    mUVCProperties = ParseUVCProperties();
 
-    // Subscribe to events
-    struct v4l2_event_subscription subscription {};
+    // Susbcribe to events
+    struct v4l2_event_subscription subscription;
+    memset(&subscription, 0, sizeof(subscription));
     std::vector<unsigned long> events = {UVC_EVENT_SETUP, UVC_EVENT_DATA, UVC_EVENT_STREAMON,
                                          UVC_EVENT_STREAMOFF, UVC_EVENT_DISCONNECT};
 
@@ -154,22 +153,22 @@ Status UVCProvider::UVCDevice::openV4L2DeviceAndSubscribe(const std::string& vid
     return Status::OK;
 }
 
-static bool isVideoOutputDevice(const char* dev) {
+static boolean isVideoOutputDevice(const char* dev) {
     base::unique_fd fd(open(dev, O_RDWR));
     if (fd.get() < 0) {
-        ALOGW("%s Opening V4L2 node %s failed %s", __FUNCTION__, dev, strerror(errno));
+        ALOGE("%s Opening V4L2 node %s failed %s", __FUNCTION__, dev, strerror(errno));
         return false;
     }
 
-    struct v4l2_capability capability {};
+    struct v4l2_capability capability;
     int ret = ioctl(fd.get(), VIDIOC_QUERYCAP, &capability);
     if (ret < 0) {
-        ALOGV("%s v4l2 QUERYCAP %s failed %s", __FUNCTION__, dev, strerror(errno));
+        ALOGE("%s v4l2 QUERYCAP %s failed %s", __FUNCTION__, dev, strerror(errno));
         return false;
     }
 
     if (capability.device_caps & V4L2_CAP_VIDEO_OUTPUT) {
-        ALOGI("%s device %s supports VIDEO_OUTPUT", __FUNCTION__, dev);
+        ALOGV("%s device %s supports VIDEO_OUTPUT", __FUNCTION__, dev);
         return true;
     }
     ALOGV("%s device %s does not support VIDEO_OUTPUT", __FUNCTION__, dev);
@@ -179,7 +178,8 @@ static bool isVideoOutputDevice(const char* dev) {
 void UVCProvider::UVCDevice::getFrameIntervals(ConfigFrame* frame, ConfigFormat* format) {
     uint32_t index = 0;
     while (true) {
-        struct v4l2_frmivalenum intervalDesc {};
+        struct v4l2_frmivalenum intervalDesc;
+        memset(&intervalDesc, 0, sizeof(intervalDesc));
         intervalDesc.index = index;
         intervalDesc.pixel_format = format->fcc;
         intervalDesc.width = frame->width;
@@ -195,7 +195,7 @@ void UVCProvider::UVCDevice::getFrameIntervals(ConfigFrame* frame, ConfigFormat*
         uint32_t ival = 0;
         switch (intervalDesc.type) {
             case V4L2_FRMIVAL_TYPE_DISCRETE:
-                ival = (intervalDesc.discrete.numerator * FRAME_INTERVAL_NUM) /
+                ival = ((float)intervalDesc.discrete.numerator * FRAME_INTERVAL_NUM) /
                        intervalDesc.discrete.denominator;
                 break;
             case V4L2_FRMIVAL_TYPE_STEPWISE:
@@ -209,12 +209,14 @@ void UVCProvider::UVCDevice::getFrameIntervals(ConfigFrame* frame, ConfigFormat*
         frame->intervals.emplace_back(ival);
         index++;
     }
+    return;
 }
 
 void UVCProvider::UVCDevice::getFormatFrames(ConfigFormat* format) {
     uint32_t index = 0;
     while (true) {
-        struct v4l2_frmsizeenum frameDesc {};
+        struct v4l2_frmsizeenum frameDesc;
+        memset(&frameDesc, 0, sizeof(frameDesc));
         frameDesc.index = index;
         frameDesc.pixel_format = format->fcc;
         ALOGI("Getting frames for format index %u", index);
@@ -226,7 +228,7 @@ void UVCProvider::UVCDevice::getFormatFrames(ConfigFormat* format) {
             ALOGE("%s V4L2 api returned different index %u from expected %u", __FUNCTION__,
                   frameDesc.index, index);
         }
-        ConfigFrame configFrame{};
+        ConfigFrame configFrame;
         configFrame.index = index;
         switch (frameDesc.type) {
             case V4L2_FRMSIZE_TYPE_DISCRETE:
@@ -246,15 +248,18 @@ void UVCProvider::UVCDevice::getFormatFrames(ConfigFormat* format) {
         format->frames.emplace_back(configFrame);
         index++;
     }
+    return;
 }
 
 std::vector<ConfigFormat> UVCProvider::UVCDevice::getFormats() {
+    uint32_t index = 0;
     std::vector<ConfigFormat> retVal;
-    for (uint32_t index = 0; true; ++index) {
-        ALOGI("Getting formats for index %u", index);
-        struct v4l2_fmtdesc formatDesc {};
+    while (true) {
+        struct v4l2_fmtdesc formatDesc;
+        memset(&formatDesc, 0, sizeof(formatDesc));
         formatDesc.index = index;
         formatDesc.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        ALOGI("Getting formats for index %u", index);
         int ret = ioctl(mUVCFd.get(), VIDIOC_ENUM_FMT, &formatDesc);
         if (ret != 0) {
             return retVal;
@@ -263,30 +268,32 @@ std::vector<ConfigFormat> UVCProvider::UVCDevice::getFormats() {
             ALOGE("%s V4L2 api returned different index %u from expected %u", __FUNCTION__,
                   formatDesc.index, index);
         }
-
-        ConfigFormat configFormat{};
-        configFormat.formatIndex = formatDesc.index;  // TODO: Double check with jchowdhary@
+        ConfigFormat configFormat;
+        configFormat.formatIndex = index;
         configFormat.fcc = formatDesc.pixelformat;
         getFormatFrames(&configFormat);
         retVal.emplace_back(configFormat);
+        index++;
     }
+    return retVal;
 }
 
-std::shared_ptr<UVCProperties> UVCProvider::UVCDevice::parseUvcProperties() {
+std::shared_ptr<UVCProperties> UVCProvider::UVCDevice::ParseUVCProperties() {
     std::shared_ptr<UVCProperties> ret = std::make_shared<UVCProperties>();
     ret->videoNode = mVideoNode;
     ret->streaming.formats = getFormats();
+
+    // Control interface number is defined as 0 and streaming as 1
     ret->controlInterfaceNumber = CONTROL_INTERFACE_IDX;
     ret->streaming.interfaceNumber = STREAMING_INTERFACE_IDX;
     return ret;
 }
 
-UVCProvider::UVCDevice::UVCDevice(std::weak_ptr<UVCProvider> parent) {
-    mParent = std::move(parent);
+UVCProvider::UVCDevice::UVCDevice(jobject weakThiz, std::weak_ptr<UVCProvider> parent) {
+    mParent = parent;
 
     // Initialize probe and commit controls with default values
-    FormatTriplet defaultFormatTriplet(/*formatIndex*/ 1, /*frameSizeIndex*/ 1,
-                                       /*frameInterval*/ 0);
+    FormatTriplet defaultFormatTriplet(/*formatIndex*/ 1, /*frameIndex*/ 1, /*frameInterval*/ 0);
 
     mVideoNode = getVideoNode();
 
@@ -302,15 +309,17 @@ UVCProvider::UVCDevice::UVCDevice(std::weak_ptr<UVCProvider> parent) {
     }
     setStreamingControl(&mCommit, &defaultFormatTriplet);
     mInited = true;
+    mWeakThiz = weakThiz;
 }
 
 void UVCProvider::UVCDevice::closeUVCFd() {
     if (mUVCFd.get() >= 0) {
-        struct v4l2_event_subscription subscription {};
+        struct v4l2_event_subscription subscription;
+        memset(&subscription, 0, sizeof(subscription));
         subscription.type = V4L2_EVENT_ALL;
 
         if (ioctl(mUVCFd.get(), VIDIOC_UNSUBSCRIBE_EVENT, subscription) < 0) {
-            ALOGE("%s Couldn't unsubscribe from V4L2 events error %s", __FUNCTION__,
+            ALOGE("%s Couldn't unsubsrcibe from V4L2 events error %s", __FUNCTION__,
                   strerror(errno));
         }
     }
@@ -320,20 +329,20 @@ void UVCProvider::UVCDevice::closeUVCFd() {
 std::string UVCProvider::getVideoNode() {
     std::string devNode;
     ALOGV("%s start scanning for existing V4L2 OUTPUT devices", __FUNCTION__);
-    glob_t globRes;
-    glob(kDeviceGlobPattern, /*flags*/ 0, /*error_callback*/ nullptr, &globRes);
-    for (unsigned int i = 0; i < globRes.gl_pathc; ++i) {
-        ALOGV("%s file: %s", __FUNCTION__, globRes.gl_pathv[i]);
-        if (isVideoOutputDevice(globRes.gl_pathv[i])) {
-            devNode = globRes.gl_pathv[i];
+    glob_t globbuf;
+    glob(kDeviceGlobPattern, /*flags*/ 0, /*errfunc*/ NULL, &globbuf);
+    for (unsigned int i = 0; i < globbuf.gl_pathc; ++i) {
+        ALOGV("%s file: %s", __FUNCTION__, globbuf.gl_pathv[i]);
+        if (isVideoOutputDevice(globbuf.gl_pathv[i])) {
+            devNode = globbuf.gl_pathv[i];
             break;
         }
     }
-    globfree(&globRes);
+    globfree(&globbuf);
     return devNode;
 }
 
-bool UVCProvider::UVCDevice::isInited() const {
+bool UVCProvider::UVCDevice::isInited() {
     return mInited;
 }
 
@@ -342,6 +351,7 @@ void UVCProvider::UVCDevice::processSetupControlEvent(const struct usb_ctrlreque
     // TODO(b/267794640): Support control requests
     resp->data[0] = 0x3;
     resp->length = control->wLength;
+    return;
 }
 
 void UVCProvider::UVCDevice::processSetupStreamingEvent(const struct usb_ctrlrequest* request,
@@ -356,12 +366,8 @@ void UVCProvider::UVCDevice::processSetupStreamingEvent(const struct usb_ctrlreq
     struct uvc_streaming_control* ctrl =
             reinterpret_cast<struct uvc_streaming_control*>(response->data);
     response->length = sizeof(struct uvc_streaming_control);
-    FormatTriplet maxFormatTriplet(/*formatIndex*/ UINT8_MAX,
-                                   /*frameSizeIndex*/ UINT8_MAX,
-                                   /*frameInterval*/ UINT32_MAX);
-    FormatTriplet defaultFormatTriplet(/*formatIndex*/ 1, /*frameSizeIndex*/ 1,
-                                       /*frameInterval*/ 0);
-
+    FormatTriplet maxFormatTriplet(UINT8_MAX, UINT8_MAX, UINT8_MAX);
+    FormatTriplet defaultFormatTriplet(1, 1, 0);
     switch (requestType) {
         case UVC_SET_CUR:
             mCurrentControlState = controlSelect;
@@ -450,12 +456,11 @@ void UVCProvider::UVCDevice::setStreamingControl(struct uvc_streaming_control* s
     uint8_t chosenFrameIndex = req->frameSizeIndex > chosenFormat.frames.size()
                                        ? chosenFormat.frames.size()
                                        : req->frameSizeIndex;
-    ALOGI("%s: chosenFrameIndex: %d", __FUNCTION__, chosenFrameIndex);
     const ConfigFrame& chosenFrame = chosenFormat.frames[chosenFrameIndex - 1];
     uint32_t reqFrameInterval = req->frameInterval;
     bool largerFound = false;
     // Choose the first frame interval >= requested. Frame intervals are expected to be in
-    // ascending order.
+    // ascending order..
     for (auto frameInterval : chosenFrame.intervals) {
         if (reqFrameInterval <= frameInterval) {
             reqFrameInterval = frameInterval;
@@ -491,7 +496,7 @@ void UVCProvider::UVCDevice::setStreamingControl(struct uvc_streaming_control* s
 void UVCProvider::UVCDevice::commitControls() {
     const ConfigFormat& commitFormat = mUVCProperties->streaming.formats[mCommit.bFormatIndex - 1];
     const ConfigFrame& commitFrame = commitFormat.frames[mCommit.bFrameIndex - 1];
-    mFps = FRAME_INTERVAL_NUM / mCommit.dwFrameInterval;
+    mFps = (float)FRAME_INTERVAL_NUM / mCommit.dwFrameInterval;
 
     memset(&mV4l2Format, 0, sizeof(mV4l2Format));
     mV4l2Format.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
@@ -535,7 +540,8 @@ void UVCProvider::UVCDevice::processDataEvent(const struct uvc_request_data* dat
 }
 
 std::shared_ptr<Buffer> UVCProvider::UVCDevice::mapBuffer(uint32_t i) {
-    struct v4l2_buffer buffer {};
+    struct v4l2_buffer buffer;
+    memset(&buffer, 0, sizeof(buffer));
 
     buffer.index = i;
     buffer.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
@@ -547,9 +553,9 @@ std::shared_ptr<Buffer> UVCProvider::UVCDevice::mapBuffer(uint32_t i) {
         return nullptr;
     }
 
-    void* mem = mmap(/*addr*/ nullptr, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED,
-                     mUVCFd.get(), buffer.m.offset);
-    if (mem == MAP_FAILED) {
+    void* mem = mmap(/*addr*/ 0, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED, mUVCFd.get(),
+                     buffer.m.offset);
+    if (mem == nullptr) {
         ALOGE("%s: Unable to map V4L2 buffer index %u from gadget driver: %s", __FUNCTION__, i,
               strerror(errno));
         return nullptr;
@@ -567,7 +573,8 @@ Status UVCProvider::UVCDevice::allocateAndMapBuffers(
     }
     *consumerBuffer = nullptr;
     producerBuffers->clear();
-    struct v4l2_requestbuffers requestBuffers {};
+    struct v4l2_requestbuffers requestBuffers;
+    memset(&requestBuffers, 0, sizeof(requestBuffers));
 
     requestBuffers.count = NUM_BUFFERS_ALLOC;
     requestBuffers.memory = V4L2_MEMORY_MMAP;
@@ -589,7 +596,7 @@ Status UVCProvider::UVCDevice::allocateAndMapBuffers(
 
     // First buffer is consumer buffer
     *consumerBuffer = mapBuffer(0);
-    if (*consumerBuffer == nullptr) {
+    if (consumerBuffer == nullptr) {
         ALOGE("%s: Mapping consumer buffer failed", __FUNCTION__);
         return Status::ERROR;
     }
@@ -611,7 +618,7 @@ Status UVCProvider::UVCDevice::allocateAndMapBuffers(
 Status UVCProvider::UVCDevice::unmapBuffer(std::shared_ptr<Buffer>& buffer) {
     if (buffer->getMem() != nullptr) {
         if (munmap(buffer->getMem(), buffer->getLength()) < 0) {
-            ALOGE("%s: munmap failed for buffer with pointer %p", __FUNCTION__, buffer->getMem());
+            ALOGE("%s munmap failed for buffer with pointer %p", __FUNCTION__, buffer->getMem());
             return Status::ERROR;
         }
     }
@@ -630,7 +637,8 @@ void UVCProvider::UVCDevice::destroyBuffers(std::shared_ptr<Buffer>& consumerBuf
                   __FUNCTION__);
         }
     }
-    struct v4l2_requestbuffers zeroRequest {};
+    struct v4l2_requestbuffers zeroRequest;
+    memset(&zeroRequest, 0, sizeof(zeroRequest));
     zeroRequest.count = 0;
     zeroRequest.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     zeroRequest.memory = V4L2_MEMORY_MMAP;
@@ -642,10 +650,10 @@ void UVCProvider::UVCDevice::destroyBuffers(std::shared_ptr<Buffer>& consumerBuf
 }
 
 Status UVCProvider::UVCDevice::getFrameAndQueueBufferToGadgetDriver(bool firstBuffer) {
-    // If first buffer, also call the STREAMON ioctl on uvc device
-    ALOGV("%s: E", __FUNCTION__);
+    ALOGV("%s begin", __FUNCTION__);
+    // If first buffer also, call the STREAMON ioctl on uvc device
+    int type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     if (firstBuffer) {
-        int type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
         if (ioctl(mUVCFd.get(), VIDIOC_STREAMON, &type) < 0) {
             ALOGE("%s: VIDIOC_STREAMON failed %s", __FUNCTION__, strerror(errno));
             return Status::ERROR;
@@ -653,13 +661,13 @@ Status UVCProvider::UVCDevice::getFrameAndQueueBufferToGadgetDriver(bool firstBu
     }
     Buffer* buffer = mBufferManager->getFilledBufferAndSwap();
     struct v4l2_buffer v4L2Buffer = *(static_cast<V4L2Buffer*>(buffer)->getV4L2Buffer());
-    ALOGV("%s: got buffer, queueing it with index %u", __FUNCTION__, v4L2Buffer.index);
+    ALOGV("%s got buffer, queueing it index %u", __FUNCTION__, v4L2Buffer.index);
 
     if (ioctl(mUVCFd.get(), VIDIOC_QBUF, &v4L2Buffer) < 0) {
         ALOGE("%s: VIDIOC_QBUF failed on gadget driver: %s", __FUNCTION__, strerror(errno));
         return Status::ERROR;
     }
-    ALOGV("%s: X", __FUNCTION__);
+    ALOGV("%s end", __FUNCTION__);
     return Status::OK;
 }
 
@@ -688,7 +696,7 @@ void UVCProvider::UVCDevice::processStreamOnEvent() {
     config.fcc = mV4l2Format.fmt.pix.pixelformat;
     config.fps = mFps;
 
-    mFrameProvider = std::make_shared<SdkFrameProvider>(mBufferManager, config);
+    mFrameProvider = std::make_shared<SdkFrameProvider>(mWeakThiz, mBufferManager, config);
     mFrameProvider->setStreamConfig();
     mFrameProvider->startStreaming();
 
@@ -702,12 +710,19 @@ void UVCProvider::UVCDevice::processStreamOnEvent() {
     parent->watchStreamEvent();
 }
 
+UVCProvider::UVCProvider(JNIEnv* env, JavaVM* jvm, jobject weakThiz,
+                         DeviceAsWebcamServiceManager* mgr)
+    : mJVM(jvm), mDawMgr(mgr) {
+    mWeakThiz = env->NewGlobalRef(weakThiz);
+}
+
 UVCProvider::~UVCProvider() {
+    // JNIEnv *env = nullptr;
+    // ScopedAttach attach(mJVM, &env);
     if (mUVCListenerThread.joinable()) {
-        mListenToUVCFds = false;
+        mListenToUVCFds.store(false);
         mUVCListenerThread.join();
     }
-
     if (mUVCDevice) {
         int fd = mUVCDevice->getUVCFd();
         if (fd >= 0) {
@@ -715,16 +730,17 @@ UVCProvider::~UVCProvider() {
         }
     }
     mUVCDevice = nullptr;
+    // env->DeleteGlobalRef(mWeakThiz);
 }
 
 Status UVCProvider::init() {
-    // TODO: What in the world?
     return mEpollW.init();
 }
 
 void UVCProvider::UVCDevice::processStreamEvent() {
     // Dequeue producer buffer
-    struct v4l2_buffer v4L2Buffer {};
+    struct v4l2_buffer v4L2Buffer;
+    memset(&v4L2Buffer, 0, sizeof(v4L2Buffer));
     v4L2Buffer.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     v4L2Buffer.memory = V4L2_MEMORY_MMAP;
 
@@ -737,16 +753,10 @@ void UVCProvider::UVCDevice::processStreamEvent() {
         return;
     }
 }
-Status UVCProvider::UVCDevice::encodeImage(AHardwareBuffer* buffer, long timestamp) {
-    if (mFrameProvider == nullptr) {
-        ALOGE("%s: encodeImage called but there is no frame provider active", __FUNCTION__);
-        return Status::ERROR;
-    }
-    return mFrameProvider->encodeImage(buffer, timestamp);
-}
 
 void UVCProvider::processUVCEvent() {
-    struct v4l2_event event {};
+    struct v4l2_event event;
+    memset(&event, 0, sizeof(event));
     int deviceFd = mUVCDevice->getUVCFd();
 
     if (ioctl(deviceFd, VIDIOC_DQEVENT, &event) < 0) {
@@ -754,7 +764,8 @@ void UVCProvider::processUVCEvent() {
         return;
     }
     struct uvc_event* uvcEvent = reinterpret_cast<struct uvc_event*>(&event.u.data);
-    struct uvc_request_data uvcResponse {};
+    struct uvc_request_data uvcResponse;
+    memset(&uvcResponse, 0, sizeof(uvcResponse));
     switch (event.type) {
         case UVC_EVENT_CONNECT:
             return;
@@ -763,6 +774,7 @@ void UVCProvider::processUVCEvent() {
             stopService();
             return;
         case UVC_EVENT_SETUP:
+            // ALOGV since we get multiple setup events in one session
             ALOGV(" %s: Setup event ", __FUNCTION__);
             mUVCDevice->processSetupEvent(&(uvcEvent->req), &uvcResponse);
             break;
@@ -790,7 +802,6 @@ void UVCProvider::processUVCEvent() {
     }
 }
 
-// TODO: seems unnecessary
 void UVCProvider::watchStreamEvent() {
     mEpollW.modify(mUVCDevice->getUVCFd(), EPOLLPRI | EPOLLOUT);
 }
@@ -800,14 +811,12 @@ void UVCProvider::ListenToUVCFds() {
     ALOGI("%s Start to listen to device fd %d", __FUNCTION__, mUVCDevice->getUVCFd());
     mEpollW.add(mUVCDevice->getUVCFd(), EPOLLPRI);
     // For stream events : dequeue and queue buffers
-    while (mListenToUVCFds) {
-        Events events = mEpollW.waitForEvents();
+    while (mListenToUVCFds.load()) {
+        Events events = mEpollW.wait();
         for (auto event : events) {
-            // Priority event might come with regular events, so one event could have both
             if (event.events & EPOLLPRI) {
                 processUVCEvent();
             }
-
             if (event.events & EPOLLOUT) {
                 if (mUVCDevice != nullptr) {
                     mUVCDevice->processStreamEvent();
@@ -821,25 +830,15 @@ void UVCProvider::ListenToUVCFds() {
     }
 }
 
-int UVCProvider::encodeImage(AHardwareBuffer* buffer, long timestamp) {
-    if (mUVCDevice == nullptr) {
-        ALOGE("%s: Request to encode Image without UVCDevice Running.", __FUNCTION__);
-        return -1;
-    }
-    return mUVCDevice->encodeImage(buffer, timestamp) == Status::OK ? 0 : -1;
-}
-
 void UVCProvider::startUVCListenerThread() {
-    mListenToUVCFds = true;
-    mUVCListenerThread =
-            DeviceAsWebcamNative::createJniAttachedThread(&UVCProvider::ListenToUVCFds, this);
+    mListenToUVCFds.store(true);
+    mUVCListenerThread = std::thread(&UVCProvider::ListenToUVCFds, this);
     ALOGI("Started new UVCListenerThread");
 }
-
 void UVCProvider::stopAndWaitForUVCListenerThread() {
-    // This thread stays alive till onDestroy is called.
+    // This thread stays alive till stopService is called.
     if (mUVCListenerThread.joinable()) {
-        mListenToUVCFds = false;
+        mListenToUVCFds.store(false);
         mUVCListenerThread.join();
     }
 }
@@ -850,24 +849,23 @@ Status UVCProvider::startService() {
     if (mUVCDevice != nullptr) {
         mUVCDevice->closeUVCFd();
     }
-    mUVCDevice = std::make_shared<UVCDevice>(shared_from_this());
+    mUVCDevice = std::make_shared<UVCDevice>(mWeakThiz, shared_from_this());
     if (!mUVCDevice->isInited()) {
         return Status::ERROR;
     }
-    stopAndWaitForUVCListenerThread();  // Just in case it is already running
+    stopAndWaitForUVCListenerThread();
     startUVCListenerThread();
     return Status::OK;
 }
 
 void UVCProvider::stopService() {
-    // TODO: Try removing this
     mUVCDevice->processStreamOffEvent();
     mEpollW.remove(mUVCDevice->getUVCFd());
-    // Signal the service to stop.
-    // UVC Provider will get destructed when the Java Service is destroyed.
-    DeviceAsWebcamServiceManager::kInstance->stopService();
+    // TODO(b/267794640): Delegate to central jni caller
+    SdkFrameProvider::stopService(mWeakThiz);
     mUVCDevice = nullptr;
-    mListenToUVCFds = false;
+    mListenToUVCFds.store(false);
+    mDawMgr->recordServiceStopped();
 }
 
 }  // namespace webcam

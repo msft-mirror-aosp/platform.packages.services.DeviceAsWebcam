@@ -14,29 +14,23 @@
  * limitations under the License.
  */
 
-/*
- *  Manage the remote camera service native functions.
- */
-#pragma once
 #include <jni.h>
+#include <nativehelper/JNIHelp.h>
 
-namespace android {
-namespace webcam {
+#include "DeviceAsWebcamServiceManager.h"
+#include "SdkFrameProvider.h"
 
-enum Status {
-    OK = 0,
-    ERROR = 1,
-};
-
-class ScopedAttach {
-  public:
-    ScopedAttach(JavaVM* vm, JNIEnv** env) : vm_(vm) { vm_->AttachCurrentThread(env, NULL); }
-
-    ~ScopedAttach() { vm_->DetachCurrentThread(); }
-
-  private:
-    JavaVM* vm_;
-};
-
-}  // namespace webcam
-}  // namespace android
+jint JNI_OnLoad(JavaVM* jvm, void*) {
+    using namespace android::webcam;
+    JNIEnv* e = NULL;
+    if (jvm->GetEnv((void**)&e, JNI_VERSION_1_6)) {
+        return JNI_ERR;
+    }
+    if (DeviceAsWebcamServiceManager::getInstance()->registerJniFunctions(e, jvm) != 0) {
+        return JNI_ERR;
+    }
+    if (SdkFrameProvider::registerJniFunctions(e, jvm) != 0) {
+        return JNI_ERR;
+    }
+    return JNI_VERSION_1_6;
+}

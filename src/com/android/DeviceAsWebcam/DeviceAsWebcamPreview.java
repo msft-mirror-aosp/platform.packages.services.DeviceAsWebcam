@@ -139,7 +139,6 @@ public class DeviceAsWebcamPreview extends Activity {
         cv.close();
         runOnUiThread(() -> {
             try {
-                mLocalFgService = null;
                 finish();
             } finally {
                 cv.open();

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,9 @@
  */
 
 #pragma once
+#include <jni.h>
 #include <linux/videodev2.h>
-#include <utility>
 #include <vector>
-#include <android/hardware_buffer.h>
 
 #include "Buffer.h"
 #include "Utils.h"
@@ -33,17 +32,16 @@ struct CameraConfig {
     uint32_t fcc = V4L2_PIX_FMT_MJPEG;
 };
 
-// Abstract class which maps camera operations
+// Abstract class which maps camera operationss
 class FrameProvider {
   public:
     FrameProvider(std::shared_ptr<BufferProducer> producer, CameraConfig config)
-        : mBufferProducer(std::move(producer)), mConfig(config) {}
-    virtual ~FrameProvider() = default;
+        : mBufferProducer(producer), mConfig(config) {}
+    virtual ~FrameProvider() {}
     virtual void setStreamConfig() = 0;
     virtual Status startStreaming() = 0;
     virtual Status stopStreaming() = 0;
-    virtual Status encodeImage(AHardwareBuffer* hardwareBuffer, long timestamp) = 0;
-    [[nodiscard]] virtual bool isInited() const { return mInited; }
+    bool isInited() { return mInited; }
 
   protected:
     std::shared_ptr<BufferProducer> mBufferProducer;

@@ -58,11 +58,6 @@ Buffer* BufferManager::getFreeBufferIfAvailable() {
             return bufferItem.buffer.get();
         }
     }
-    for (const auto& bufferItem : mProducerBufferItems) {
-        uint64_t bufferTs = bufferItem.buffer->getTimestamp();
-        ALOGV("Buffer at state %d, ts %" PRIu64 ", v4l2 index %u", (int)bufferItem.state, bufferTs,
-              bufferItem.buffer->getIndex());
-    }
     return nullptr;
 }
 
@@ -114,7 +109,7 @@ Buffer* BufferManager::getFilledBufferAndSwap() {
 
 bool BufferManager::changeProducerBufferStateLocked(Buffer* buffer, BufferState newState) {
     bool found = false;
-    uint32_t i = 0;
+    uint32_t i = 0, foundIdx = 0;
     for (auto& bufferItem : mProducerBufferItems) {
         if (buffer->getIndex() == bufferItem.buffer->getIndex()) {
             found = true;
@@ -123,7 +118,7 @@ bool BufferManager::changeProducerBufferStateLocked(Buffer* buffer, BufferState 
         i++;
     }
     if (!found) {
-        ALOGE("%s queuing incorrect buffer, filled buffer index %u", __FUNCTION__,
+        ALOGE("%s queing incorrect buffer, filled buffer index %u", __FUNCTION__,
               buffer->getIndex());
         return false;
     }
