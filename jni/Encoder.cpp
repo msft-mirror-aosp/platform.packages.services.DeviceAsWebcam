@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <libyuv/convert.h>
 #include <libyuv/convert_from.h>
+#include <libyuv/rotate.h>
 #include <log/log.h>
 #include <queue>
 #include <sched.h>
@@ -292,11 +293,19 @@ int Encoder::convertToI420(EncodeRequest& request) {
     int32_t dstYRowStride = mConfig.width;
     int32_t dstURowStride = mConfig.width / 2;
     int32_t dstVRowStride = mConfig.width / 2;
-
-    return libyuv::Android420ToI420(src.yData, src.yRowStride, src.uData, src.uRowStride, src.vData,
-                                    src.vRowStride, src.uvPixelStride, dstY, dstYRowStride, dstU,
-                                    dstURowStride, dstV, dstVRowStride, mConfig.width,
-                                    mConfig.height);
+    libyuv::RotationMode rotationMode = request.rotationDegrees == 180 ?
+        libyuv::kRotate180 : libyuv::kRotate0;
+    if (request.srcBuffer.format == AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM) {
+        ARGBHardwareBufferDesc desc = std::get<ARGBHardwareBufferDesc>(src.bufferDesc);
+        return libyuv::ARGBToI420(desc.buf, desc.rowStride, dstY,
+                                  dstYRowStride, dstU, dstURowStride, dstV,
+                                  dstVRowStride, mConfig.width, mConfig.height);
+    }
+    YuvHardwareBufferDesc desc = std::get<YuvHardwareBufferDesc>(src.bufferDesc);
+    return libyuv::Android420ToI420Rotate(desc.yData, desc.yRowStride, desc.uData, desc.uRowStride,
+                                    desc.vData, desc.vRowStride, desc.uvPixelStride, dstY,
+                                    dstYRowStride, dstU, dstURowStride, dstV, dstVRowStride,
+                                    mConfig.width, mConfig.height, rotationMode);
 }
 
 void Encoder::encodeToYUYV(EncodeRequest& r) {

@@ -42,10 +42,11 @@ class DeviceAsWebcamNative {
 
     // Native implementations of Java Methods.
     static jint com_android_DeviceAsWebcam_encodeImage(JNIEnv* env, jobject thiz,
-                                                       jobject hardwareBuffer, jlong timestamp);
-    static jint com_android_DeviceAsWebcam_setupServicesAndStartListening(JNIEnv* env,
-                                                                          jobject thiz);
-    static jboolean com_android_DeviceAsWebcam_shouldStartService(JNIEnv*, jclass);
+                                                       jobject hardwareBuffer, jlong timestamp,
+                                                       jint rotation);
+    static jint com_android_DeviceAsWebcam_setupServicesAndStartListening(JNIEnv*, jobject,
+                                                                          jobjectArray);
+    static jboolean com_android_DeviceAsWebcam_shouldStartService(JNIEnv*, jclass, jobjectArray);
     static void com_android_DeviceAsWebcam_onDestroy(JNIEnv*, jobject);
 
     // Methods that call back into java code. The method signatures match their java counterparts
