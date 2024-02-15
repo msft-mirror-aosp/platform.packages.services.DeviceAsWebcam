@@ -60,11 +60,12 @@ static inline jmethodID GetMethodIdOrDie(JNIEnv* env, jclass clazz, const char* 
 }
 
 const JNINativeMethod DeviceAsWebcamNative::sMethods[] = {
-        {"setupServicesAndStartListeningNative", "()I",
+        {"setupServicesAndStartListeningNative", "([Ljava/lang/String;)I",
          (void*)com_android_DeviceAsWebcam_setupServicesAndStartListening},
         {"nativeOnDestroy", "()V", (void*)com_android_DeviceAsWebcam_onDestroy},
-        {"shouldStartServiceNative", "()Z", (void*)com_android_DeviceAsWebcam_shouldStartService},
-        {"nativeEncodeImage", "(Landroid/hardware/HardwareBuffer;J)I",
+        {"shouldStartServiceNative", "([Ljava/lang/String;)Z",
+         (void*)com_android_DeviceAsWebcam_shouldStartService},
+        {"nativeEncodeImage", "(Landroid/hardware/HardwareBuffer;JI)I",
          (void*)com_android_DeviceAsWebcam_encodeImage},
 };
 
@@ -88,17 +89,21 @@ int DeviceAsWebcamNative::registerJNIMethods(JNIEnv* e, JavaVM* jvm) {
 
 jint DeviceAsWebcamNative::com_android_DeviceAsWebcam_encodeImage(JNIEnv* env, jobject,
                                                                   jobject hardwareBuffer,
-                                                                  jlong timestamp) {
-    return DeviceAsWebcamServiceManager::kInstance->encodeImage(env, hardwareBuffer, timestamp);
+                                                                  jlong timestamp,
+                                                                  jint rotation) {
+    return DeviceAsWebcamServiceManager::kInstance->encodeImage(env, hardwareBuffer, timestamp,
+                                                                rotation);
 }
 
-jint DeviceAsWebcamNative::com_android_DeviceAsWebcam_setupServicesAndStartListening(JNIEnv* env,
-                                                                                     jobject thiz) {
-    return DeviceAsWebcamServiceManager::kInstance->setupServicesAndStartListening(env, thiz);
+jint DeviceAsWebcamNative::com_android_DeviceAsWebcam_setupServicesAndStartListening(
+        JNIEnv* env, jobject thiz, jobjectArray jIgnoredNodes) {
+    return DeviceAsWebcamServiceManager::kInstance->setupServicesAndStartListening(env, thiz,
+                                                                                   jIgnoredNodes);
 }
 
-jboolean DeviceAsWebcamNative::com_android_DeviceAsWebcam_shouldStartService(JNIEnv*, jclass) {
-    return DeviceAsWebcamServiceManager::kInstance->shouldStartService();
+jboolean DeviceAsWebcamNative::com_android_DeviceAsWebcam_shouldStartService(
+        JNIEnv*, jclass, jobjectArray jIgnoredNodes) {
+    return DeviceAsWebcamServiceManager::kInstance->shouldStartService(jIgnoredNodes);
 }
 
 void DeviceAsWebcamNative::com_android_DeviceAsWebcam_onDestroy(JNIEnv*, jobject) {

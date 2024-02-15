@@ -34,12 +34,13 @@ class DeviceAsWebcamServiceManager {
 
     // Returns true if the java service needs to be started. This is called by the USB Broadcast
     // receiver which might multiple receive spurious calls to start the service.
-    bool shouldStartService();
+    bool shouldStartService(jobjectArray jIgnoredNodes);
     // Inits the native side of the service. This function should be called by the Java service
     // before any of the functions below it
-    int setupServicesAndStartListening(JNIEnv* env, jobject javaService);
+    int setupServicesAndStartListening(JNIEnv* env, jobject javaService,
+                                       jobjectArray jIgnoredNodes);
     // Called by Java to encode a frame
-    int encodeImage(JNIEnv* env, jobject hardwareBuffer, jlong timestamp);
+    int encodeImage(JNIEnv* env, jobject hardwareBuffer, jlong timestamp, jint rotation);
     // Called by native service to set the stream configuration in the Java Service.
     void setStreamConfig(bool mjpeg, uint32_t width, uint32_t height, uint32_t fps);
     // Called by native service to notify the Java service to start streaming the camera.
