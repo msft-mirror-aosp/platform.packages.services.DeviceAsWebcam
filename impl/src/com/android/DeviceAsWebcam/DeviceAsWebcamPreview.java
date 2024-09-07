@@ -86,11 +86,11 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     private static final int ROTATION_ANIMATION_DURATION_MS = 300;
 
     private final Executor mThreadExecutor = Executors.newFixedThreadPool(2);
-    private final ConditionVariable mWebcamControllerReady = new ConditionVariable();
+    private final ConditionVariable mServiceReady = new ConditionVariable();
 
     private boolean mTextureViewSetup = false;
     private Size mPreviewSize;
-    private WebcamControllerImpl mWebcamController;
+    private DeviceAsWebcamFgService mLocalFgService;
     private AccessibilityManager mAccessibilityManager;
     private int mCurrRotation = Surface.ROTATION_0;
     private Size mCurrDisplaySize = new Size(0, 0);
@@ -151,72 +151,65 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
             };
 
     /**
-     * {@link TextureView.SurfaceTextureListener} handles several lifecycle events on a {@link
-     * TextureView}.
+     * {@link TextureView.SurfaceTextureListener} handles several lifecycle events on a
+     * {@link TextureView}.
      */
     private final TextureView.SurfaceTextureListener mSurfaceTextureListener =
             new TextureView.SurfaceTextureListener() {
                 @Override
-                public void onSurfaceTextureAvailable(
-                        SurfaceTexture texture, int width, int height) {
-                    runOnUiThread(
-                            () -> {
-                                if (VERBOSE) {
-                                    Log.v(
-                                            TAG,
-                                            "onSurfaceTextureAvailable " + width + " x " + height);
-                                }
-                                mWebcamControllerReady.block();
+                public void onSurfaceTextureAvailable(SurfaceTexture texture, int width,
+                        int height) {
+                    runOnUiThread(() -> {
+                        if (VERBOSE) {
+                            Log.v(TAG, "onSurfaceTextureAvailable " + width + " x " + height);
+                        }
+                        mServiceReady.block();
 
-                                if (!mTextureViewSetup) {
-                                    setupTextureViewLayout();
-                                }
+                        if (!mTextureViewSetup) {
+                            setupTextureViewLayout();
+                        }
 
-                                if (mWebcamController == null) {
-                                    return;
-                                }
-                                mWebcamController.setOnDestroyedCallback(() -> onWebcamDestroyed());
+                        if (mLocalFgService == null) {
+                            return;
+                        }
+                        mLocalFgService.setOnDestroyedCallback(() -> onServiceDestroyed());
 
-                                if (mPreviewSize == null) {
-                                    return;
-                                }
-                                mWebcamController.setPreviewSurfaceTexture(
-                                        texture, mPreviewSize, mPreviewSizeChangeListener);
-                                List<CameraId> availableCameraIds =
-                                        mWebcamController.getAvailableCameraIds();
-                                if (availableCameraIds != null && availableCameraIds.size() > 1) {
-                                    setupSwitchCameraSelector();
-                                    mToggleCameraButton.setVisibility(View.VISIBLE);
-                                    if (canToggleCamera()) {
-                                        mToggleCameraButton.setOnClickListener(v -> toggleCamera());
-                                    } else {
-                                        mToggleCameraButton.setOnClickListener(
-                                                v ->
-                                                        mCameraPickerDialog.show(
-                                                                getSupportFragmentManager(),
-                                                                "CameraPickerDialog"));
-                                    }
-                                    mToggleCameraButton.setOnLongClickListener(
-                                            v -> {
-                                                mCameraPickerDialog.show(
-                                                        getSupportFragmentManager(),
-                                                        "CameraPickerDialog");
-                                                return true;
-                                            });
-                                } else {
-                                    mToggleCameraButton.setVisibility(View.GONE);
-                                }
-                                rotateUiByRotationDegrees(mWebcamController.getCurrentRotation());
-                                mWebcamController.setRotationUpdateListener(
-                                        rotation -> {
-                                            rotateUiByRotationDegrees(rotation);
-                                        });
+                        if (mPreviewSize == null) {
+                            return;
+                        }
+                        mLocalFgService.setPreviewSurfaceTexture(texture, mPreviewSize,
+                                mPreviewSizeChangeListener);
+                        List<CameraId> availableCameraIds =
+                                mLocalFgService.getAvailableCameraIds();
+                        if (availableCameraIds != null && availableCameraIds.size() > 1) {
+                            setupSwitchCameraSelector();
+                            mToggleCameraButton.setVisibility(View.VISIBLE);
+                            if (canToggleCamera()) {
+                                mToggleCameraButton.setOnClickListener(v -> toggleCamera());
+                            } else {
+                                mToggleCameraButton.setOnClickListener(
+                                        v -> mCameraPickerDialog.show(getSupportFragmentManager(),
+                                                "CameraPickerDialog"));
+                            }
+                            mToggleCameraButton.setOnLongClickListener(v -> {
+                                mCameraPickerDialog.show(getSupportFragmentManager(),
+                                        "CameraPickerDialog");
+                                return true;
                             });
+                        } else {
+                            mToggleCameraButton.setVisibility(View.GONE);
+                        }
+                        rotateUiByRotationDegrees(mLocalFgService.getCurrentRotation());
+                        mLocalFgService.setRotationUpdateListener(
+                                rotation -> {
+                                    rotateUiByRotationDegrees(rotation);
+                                });
+                    });
                 }
 
                 @Override
-                public void onSurfaceTextureSizeChanged(
-                        SurfaceTexture texture, int width, int height) {
+                public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width,
+                        int height) {
                     if (VERBOSE) {
                         Log.v(TAG, "onSurfaceTextureSizeChanged " + width + " x " + height);
                     }
@@ -224,59 +217,52 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
 
                 @Override
                 public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
-                    runOnUiThread(
-                            () -> {
-                                if (mWebcamController != null) {
-                                    mWebcamController.removePreviewSurfaceTexture();
-                                }
-                            });
+                    runOnUiThread(() -> {
+                        if (mLocalFgService != null) {
+                            mLocalFgService.removePreviewSurfaceTexture();
+                        }
+                    });
                     return true;
                 }
 
                 @Override
-                public void onSurfaceTextureUpdated(SurfaceTexture texture) {}
-            };
-
-    private ServiceConnection mConnection =
-            new ServiceConnection() {
-                @Override
-                public void onServiceConnected(ComponentName className, IBinder serviceBinder) {
-                    DeviceAsWebcamFgService service =
-                            ((DeviceAsWebcamFgService.LocalBinder) serviceBinder).getService();
-                    if (VERBOSE) {
-                        Log.v(TAG, "Got Fg service");
-                    }
-                    if (service != null) {
-                        mWebcamController = service.getWebcamControllerImpl();
-                    }
-                    mWebcamControllerReady.open();
-                }
-
-                @Override
-                public void onServiceDisconnected(ComponentName className) {
-                    // Serialize updating mWebcamController on UI Thread as all consumers of
-                    // mWebcamController
-                    // run on the UI Thread.
-                    runOnUiThread(
-                            () -> {
-                                mWebcamController = null;
-                                finish();
-                            });
+                public void onSurfaceTextureUpdated(SurfaceTexture texture) {
                 }
             };
+
+    private ServiceConnection mConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName className, IBinder service) {
+            mLocalFgService = ((DeviceAsWebcamFgService.LocalBinder) service).getService();
+            if (VERBOSE) {
+                Log.v(TAG, "Got Fg service");
+            }
+            mServiceReady.open();
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName className) {
+            // Serialize updating mLocalFgService on UI Thread as all consumers of mLocalFgService
+            // run on the UI Thread.
+            runOnUiThread(() -> {
+                mLocalFgService = null;
+                finish();
+            });
+        }
+    };
 
     private MotionEventToZoomRatioConverter mMotionEventToZoomRatioConverter = null;
     private final MotionEventToZoomRatioConverter.ZoomRatioUpdatedListener mZoomRatioListener =
             new MotionEventToZoomRatioConverter.ZoomRatioUpdatedListener() {
                 @Override
                 public void onZoomRatioUpdated(float updatedZoomRatio) {
-                    if (mWebcamController == null) {
+                    if (mLocalFgService == null) {
                         return;
                     }
 
-                    mWebcamController.setZoomRatio(updatedZoomRatio);
-                    mZoomController.setZoomRatio(
-                            updatedZoomRatio, ZoomController.ZOOM_UI_SEEK_BAR_MODE);
+                    mLocalFgService.setZoomRatio(updatedZoomRatio);
+                    mZoomController.setZoomRatio(updatedZoomRatio,
+                            ZoomController.ZOOM_UI_SEEK_BAR_MODE);
                 }
             };
 
@@ -410,11 +396,11 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
 
     @SuppressLint("ClickableViewAccessibility")
     private void setupZoomUiControl() {
-        if (mWebcamController == null || mWebcamController.getCameraInfo() == null) {
+        if (mLocalFgService == null || mLocalFgService.getCameraInfo() == null) {
             return;
         }
 
-        Range<Float> zoomRatioRange = mWebcamController.getCameraInfo().getZoomRatioRange();
+        Range<Float> zoomRatioRange = mLocalFgService.getCameraInfo().getZoomRatioRange();
 
         if (zoomRatioRange == null) {
             return;
@@ -422,7 +408,7 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
 
         // Retrieves current zoom ratio setting from CameraController so that the zoom ratio set by
         // the previous closed activity can be correctly restored
-        float currentZoomRatio = mWebcamController.getZoomRatio();
+        float currentZoomRatio = mLocalFgService.getZoomRatio();
 
         mMotionEventToZoomRatioConverter = new MotionEventToZoomRatioConverter(
                 getApplicationContext(), zoomRatioRange, currentZoomRatio,
@@ -432,7 +418,7 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
                 mTapToFocusListener);
 
         // Restores the focus indicator if tap-to-focus points exist
-        float[] tapToFocusPoints = mWebcamController.getTapToFocusPoints();
+        float[] tapToFocusPoints = mLocalFgService.getTapToFocusPoints();
         if (tapToFocusPoints != null) {
             showFocusIndicator(tapToFocusPoints);
         }
@@ -448,8 +434,8 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
         mZoomController.setZoomRatio(currentZoomRatio, ZoomController.ZOOM_UI_TOGGLE_MODE);
         mZoomController.setOnZoomRatioUpdatedListener(
                 value -> {
-                    if (mWebcamController != null) {
-                        mWebcamController.setZoomRatio(value);
+                    if (mLocalFgService != null) {
+                        mLocalFgService.setZoomRatio(value);
                     }
                     mMotionEventToZoomRatioConverter.setZoomRatio(value);
                 });
@@ -459,23 +445,23 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private void setupZoomRatioSeekBar() {
-        if (mWebcamController == null || mWebcamController.getCameraInfo() == null) {
+        if (mLocalFgService == null) {
             return;
         }
 
         mZoomController.setSupportedZoomRatioRange(
-                mWebcamController.getCameraInfo().getZoomRatioRange());
+                mLocalFgService.getCameraInfo().getZoomRatioRange());
     }
 
     private void setupSwitchCameraSelector() {
-        if (mWebcamController == null || mWebcamController.getCameraInfo() == null) {
+        if (mLocalFgService == null || mLocalFgService.getCameraInfo() == null) {
             return;
         }
         setToggleCameraContentDescription();
-        mCameraPickerDialog.updateAvailableCameras(
-                createCameraListForPicker(), mWebcamController.getCameraInfo().getCameraId());
+        mCameraPickerDialog.updateAvailableCameras(createCameraListForPicker(),
+                mLocalFgService.getCameraInfo().getCameraId());
 
-        updateHighQualityButtonState(mWebcamController.isHighQualityModeEnabled());
+        updateHighQualityButtonState(mLocalFgService.isHighQualityModeEnabled());
         mHighQualityToggleButton.setOnClickListener(v -> {
             // Disable the toggle button to prevent spamming
             mHighQualityToggleButton.setEnabled(false);
@@ -484,7 +470,7 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private void toggleHQWithWarningIfNeeded() {
-        boolean targetHqMode = !mWebcamController.isHighQualityModeEnabled();
+        boolean targetHqMode = !mLocalFgService.isHighQualityModeEnabled();
         boolean warningEnabled = mUserPrefs.fetchHighQualityWarningEnabled(
                 /*defaultValue=*/ true);
 
@@ -516,22 +502,18 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private void setHighQualityMode(boolean enabled) {
-        Runnable callback =
-                () -> {
-                    // Immediately delegate callback to UI thread to prevent blocking the thread
-                    // that
-                    // callback was called from.
-                    runOnUiThread(
-                            () -> {
-                                setupSwitchCameraSelector();
-                                setupZoomUiControl();
-                                rotateUiByRotationDegrees(
-                                        mWebcamController.getCurrentRotation(),
-                                        /*animationDuration*/ 0L);
-                                mHighQualityToggleButton.setEnabled(true);
-                            });
-                };
-        mWebcamController.setHighQualityModeEnabled(enabled, callback);
+        Runnable callback = () -> {
+            // Immediately delegate callback to UI thread to prevent blocking the thread that
+            // callback was called from.
+            runOnUiThread(() -> {
+                setupSwitchCameraSelector();
+                setupZoomUiControl();
+                rotateUiByRotationDegrees(mLocalFgService.getCurrentRotation(),
+                        /*animationDuration*/ 0L);
+                mHighQualityToggleButton.setEnabled(true);
+            });
+        };
+        mLocalFgService.setHighQualityModeEnabled(enabled, callback);
     }
 
     private void updateHighQualityButtonState(boolean highQualityModeEnabled) {
@@ -552,8 +534,8 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private void rotateUiByRotationDegrees(int rotation, long animationDuration) {
-        if (mWebcamController == null) {
-            // Don't do anything if webcam controller is not connected
+        if (mLocalFgService == null) {
+            // Don't do anything if no foreground service is connected
             return;
         }
         int finalRotation = calculateUiRotation(rotation);
@@ -575,9 +557,8 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     private int calculateUiRotation(int rotation) {
         // Rotates the UI control container according to the device sensor rotation degrees and the
         // camera sensor orientation.
-
-        int sensorOrientation = mWebcamController.getCameraInfo().getSensorOrientation();
-        if (mWebcamController.getCameraInfo().getLensFacing()
+        int sensorOrientation = mLocalFgService.getCameraInfo().getSensorOrientation();
+        if (mLocalFgService.getCameraInfo().getLensFacing()
                 == CameraCharacteristics.LENS_FACING_BACK) {
             rotation = (rotation + sensorOrientation) % 360;
         } else {
@@ -590,25 +571,24 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private void setupTextureViewLayout() {
-        mPreviewSize = mWebcamController.getSuitablePreviewSize();
+        mPreviewSize = mLocalFgService.getSuitablePreviewSize();
         if (mPreviewSize != null) {
             setTextureViewScale();
             setupZoomUiControl();
         }
     }
 
-    private void onWebcamDestroyed() {
+    private void onServiceDestroyed() {
         ConditionVariable cv = new ConditionVariable();
         cv.close();
-        runOnUiThread(
-                () -> {
-                    try {
-                        mWebcamController = null;
-                        finish();
-                    } finally {
-                        cv.open();
-                    }
-                });
+        runOnUiThread(() -> {
+            try {
+                mLocalFgService = null;
+                finish();
+            } finally {
+                cv.open();
+            }
+        });
         cv.block();
     }
 
@@ -706,19 +686,19 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
         // a camera and start preview from here (otherwise, we wait until the surface is ready in
         // the SurfaceTextureListener).
         if (mTextureView.isAvailable()) {
-            mWebcamControllerReady.block();
+            mServiceReady.block();
             if (!mTextureViewSetup) {
                 setupTextureViewLayout();
                 mTextureViewSetup = true;
             }
-            if (mWebcamController != null && mPreviewSize != null) {
-                mWebcamController.setPreviewSurfaceTexture(
-                        mTextureView.getSurfaceTexture(), mPreviewSize, mPreviewSizeChangeListener);
-                rotateUiByRotationDegrees(mWebcamController.getCurrentRotation());
-                mWebcamController.setRotationUpdateListener(
-                        rotation -> runOnUiThread(() -> rotateUiByRotationDegrees(rotation)));
-                mZoomController.setZoomRatio(
-                        mWebcamController.getZoomRatio(), ZoomController.ZOOM_UI_TOGGLE_MODE);
+            if (mLocalFgService != null && mPreviewSize != null) {
+                mLocalFgService.setPreviewSurfaceTexture(mTextureView.getSurfaceTexture(),
+                        mPreviewSize, mPreviewSizeChangeListener);
+                rotateUiByRotationDegrees(mLocalFgService.getCurrentRotation());
+                mLocalFgService.setRotationUpdateListener(rotation ->
+                        runOnUiThread(() -> rotateUiByRotationDegrees(rotation)));
+                mZoomController.setZoomRatio(mLocalFgService.getZoomRatio(),
+                        ZoomController.ZOOM_UI_TOGGLE_MODE);
             }
         } else {
             mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
@@ -727,22 +707,21 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
 
     @Override
     public void onPause() {
-        if (mWebcamController != null) {
-            mWebcamController.removePreviewSurfaceTexture();
-            mWebcamController.setRotationUpdateListener(null);
+        if (mLocalFgService != null) {
+            mLocalFgService.removePreviewSurfaceTexture();
+            mLocalFgService.setRotationUpdateListener(null);
         }
         super.onPause();
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (mWebcamController == null
-                || (keyCode != KeyEvent.KEYCODE_VOLUME_DOWN
-                        && keyCode != KeyEvent.KEYCODE_VOLUME_UP)) {
+        if (mLocalFgService == null || (keyCode != KeyEvent.KEYCODE_VOLUME_DOWN
+                && keyCode != KeyEvent.KEYCODE_VOLUME_UP)) {
             return super.onKeyDown(keyCode, event);
         }
 
-        float zoomRatio = mWebcamController.getZoomRatio();
+        float zoomRatio = mLocalFgService.getZoomRatio();
 
         // Uses volume key events to adjust zoom ratio
         if ((keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)){
@@ -752,12 +731,12 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
         }
 
         // Clamps the zoom ratio in the supported range
-        Range<Float> zoomRatioRange = mWebcamController.getCameraInfo().getZoomRatioRange();
+        Range<Float> zoomRatioRange = mLocalFgService.getCameraInfo().getZoomRatioRange();
         zoomRatio = Math.min(Math.max(zoomRatio, zoomRatioRange.getLower()),
                 zoomRatioRange.getUpper());
 
         // Updates the new value to all related controls
-        mWebcamController.setZoomRatio(zoomRatio);
+        mLocalFgService.setZoomRatio(zoomRatio);
         mZoomController.setZoomRatio(zoomRatio, ZoomController.ZOOM_UI_SEEK_BAR_MODE);
         mMotionEventToZoomRatioConverter.setZoomRatio(zoomRatio);
 
@@ -770,8 +749,8 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
             mAccessibilityManager.removeAccessibilityServicesStateChangeListener(
                     mAccessibilityListener);
         }
-        if (mWebcamController != null) {
-            mWebcamController.setOnDestroyedCallback(null);
+        if (mLocalFgService != null) {
+            mLocalFgService.setOnDestroyedCallback(null);
         }
         unbindService(mConnection);
         super.onDestroy();
@@ -782,16 +761,16 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
      * returns {@code false}.
      */
     private boolean canToggleCamera() {
-        if (mWebcamController == null) {
+        if (mLocalFgService == null) {
             return false;
         }
 
-        List<CameraId> availableCameraIds = mWebcamController.getAvailableCameraIds();
+        List<CameraId> availableCameraIds = mLocalFgService.getAvailableCameraIds();
         boolean hasBackCamera = false;
         boolean hasFrontCamera = false;
 
         for (CameraId cameraId : availableCameraIds) {
-            CameraInfo cameraInfo = mWebcamController.getOrCreateCameraInfo(cameraId);
+            CameraInfo cameraInfo = mLocalFgService.getOrCreateCameraInfo(cameraId);
             if (cameraInfo.getLensFacing() == CameraCharacteristics.LENS_FACING_BACK) {
                 hasBackCamera = true;
             } else if (cameraInfo.getLensFacing() == CameraCharacteristics.LENS_FACING_FRONT) {
@@ -803,10 +782,10 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private void setToggleCameraContentDescription() {
-        if (mWebcamController == null) {
+        if (mLocalFgService == null) {
             return;
         }
-        int lensFacing = mWebcamController.getCameraInfo().getLensFacing();
+        int lensFacing = mLocalFgService.getCameraInfo().getLensFacing();
         CharSequence descr = getText(R.string.toggle_camera_button_description_front);
         if (lensFacing == CameraMetadata.LENS_FACING_FRONT) {
             descr = getText(R.string.toggle_camera_button_description_back);
@@ -815,42 +794,40 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private void toggleCamera() {
-        if (mWebcamController == null) {
+        if (mLocalFgService == null) {
             return;
         }
 
-        mWebcamController.toggleCamera();
+        mLocalFgService.toggleCamera();
         setToggleCameraContentDescription();
         mFocusIndicator.setVisibility(View.GONE);
-        mMotionEventToZoomRatioConverter.reset(
-                mWebcamController.getZoomRatio(),
-                mWebcamController.getCameraInfo().getZoomRatioRange());
+        mMotionEventToZoomRatioConverter.reset(mLocalFgService.getZoomRatio(),
+                mLocalFgService.getCameraInfo().getZoomRatioRange());
         setupZoomRatioSeekBar();
-        mZoomController.setZoomRatio(
-                mWebcamController.getZoomRatio(), ZoomController.ZOOM_UI_TOGGLE_MODE);
-        mCameraPickerDialog.updateSelectedCamera(mWebcamController.getCameraInfo().getCameraId());
+        mZoomController.setZoomRatio(mLocalFgService.getZoomRatio(),
+                ZoomController.ZOOM_UI_TOGGLE_MODE);
+        mCameraPickerDialog.updateSelectedCamera(mLocalFgService.getCameraInfo().getCameraId());
     }
 
     private void switchCamera(CameraId cameraId) {
-        if (mWebcamController == null) {
+        if (mLocalFgService == null) {
             return;
         }
 
-        mWebcamController.switchCamera(cameraId);
+        mLocalFgService.switchCamera(cameraId);
         setToggleCameraContentDescription();
-        mMotionEventToZoomRatioConverter.reset(
-                mWebcamController.getZoomRatio(),
-                mWebcamController.getCameraInfo().getZoomRatioRange());
+        mMotionEventToZoomRatioConverter.reset(mLocalFgService.getZoomRatio(),
+                mLocalFgService.getCameraInfo().getZoomRatioRange());
         setupZoomRatioSeekBar();
-        mZoomController.setZoomRatio(
-                mWebcamController.getZoomRatio(), ZoomController.ZOOM_UI_TOGGLE_MODE);
+        mZoomController.setZoomRatio(mLocalFgService.getZoomRatio(),
+                ZoomController.ZOOM_UI_TOGGLE_MODE);
         // CameraPickerDialog does not update its UI until the preview activity
         // notifies it of the change. So notify CameraPickerDialog about the camera change.
         mCameraPickerDialog.updateSelectedCamera(cameraId);
     }
 
     private boolean tapToFocus(MotionEvent motionEvent) {
-        if (mWebcamController == null || mWebcamController.getCameraInfo() == null) {
+        if (mLocalFgService == null || mLocalFgService.getCameraInfo() == null) {
             return false;
         }
 
@@ -858,10 +835,10 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
 
         if (isTapToResetAutoFocus(normalizedPoint)) {
             mFocusIndicator.setVisibility(View.GONE);
-            mWebcamController.resetToAutoFocus();
+            mLocalFgService.resetToAutoFocus();
         } else {
             showFocusIndicator(normalizedPoint);
-            mWebcamController.tapToFocus(normalizedPoint);
+            mLocalFgService.tapToFocus(normalizedPoint);
         }
 
         return true;
@@ -871,7 +848,7 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
      * Returns whether the new points overlap with the original tap-to-focus points or not.
      */
     private boolean isTapToResetAutoFocus(float[] newNormalizedPoints) {
-        float[] oldNormalizedPoints = mWebcamController.getTapToFocusPoints();
+        float[] oldNormalizedPoints = mLocalFgService.getTapToFocusPoints();
 
         if (oldNormalizedPoints == null) {
             return false;
@@ -915,14 +892,14 @@ public class DeviceAsWebcamPreview extends FragmentActivity {
     }
 
     private List<CameraPickerDialog.ListItem> createCameraListForPicker() {
-        List<CameraId> availableCameraIds = mWebcamController.getAvailableCameraIds();
+        List<CameraId> availableCameraIds = mLocalFgService.getAvailableCameraIds();
         if (availableCameraIds == null) {
-            Log.w(TAG, "No cameras listed for picker. Why is Webcam Preview running?");
+            Log.w(TAG, "No cameras listed for picker. Why is Webcam Service running?");
             return List.of();
         }
 
         return availableCameraIds.stream()
-                .map(mWebcamController::getOrCreateCameraInfo)
+                .map(mLocalFgService::getOrCreateCameraInfo)
                 .filter(Objects::nonNull)
                 .map(CameraPickerDialog.ListItem::new)
                 .toList();
