@@ -10,9 +10,10 @@ android_app {
         "androidx-constraintlayout_constraintlayout",
         "androidx.appcompat_appcompat",
         "androidx.cardview_cardview",
+        "androidx.core_core",
         "androidx.recyclerview_recyclerview",
         "androidx.window_window",
-        "device_as_webcam_flags_java_lib",
+        "libDeviceAsWebcam",
     ],
 
     srcs: [
@@ -22,9 +23,6 @@ android_app {
     platform_apis: true,
     certificate: "platform",
     privileged: true,
-    optimize: {
-        proguard_flags_files: ["proguard.flags"],
-    },
     jni_libs: [
         "libjni_deviceAsWebcam",
     ],
