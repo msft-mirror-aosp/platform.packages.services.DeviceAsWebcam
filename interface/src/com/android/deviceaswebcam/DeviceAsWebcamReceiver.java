@@ -41,6 +41,9 @@ public abstract class DeviceAsWebcamReceiver extends BroadcastReceiver {
     public final void onReceive(Context context, Intent intent) {
         final String action = intent.getAction();
         Bundle extras = intent.getExtras();
+        if (extras == null) {
+            return;
+        }
         boolean uvcSelected = extras.getBoolean(UsbManager.USB_FUNCTION_UVC);
         if (VERBOSE) {
             Log.v(TAG, "Got broadcast with extras" + extras);
