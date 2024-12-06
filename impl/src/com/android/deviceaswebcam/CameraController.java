@@ -55,7 +55,6 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.DeviceAsWebcam.R;
-import com.android.deviceaswebcam.flags.Flags;
 import com.android.deviceaswebcam.utils.UserPrefs;
 
 import java.nio.ByteBuffer;
@@ -360,8 +359,7 @@ public class CameraController {
         mCameraManager.registerAvailabilityCallback(
                 mCameraCallbacksExecutor, mCameraAvailabilityCallbacks);
         mUserPrefs = new UserPrefs(mContext);
-        mHighQualityModeEnabled = Flags.highQualityToggle() &&
-                mUserPrefs.fetchHighQualityModeEnabled(/*defaultValue*/ false);
+        mHighQualityModeEnabled = mUserPrefs.fetchHighQualityModeEnabled(/*defaultValue*/ false);
         mRroCameraInfo = createVendorCameraPrefs(mHighQualityModeEnabled);
         refreshAvailableCameraIdList();
         refreshLensFacingCameraIds();
